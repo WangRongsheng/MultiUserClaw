@@ -1,18 +1,17 @@
-FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
+FROM ghcr.io/astral-sh/uv:python3.13-bookworm-slim
 
 WORKDIR /app
 
-# Install Python dependencies
+# Copy dependency files first for better layer caching
 COPY pyproject.toml ./
-RUN mkdir -p app && touch app/__init__.py && \
-    uv pip install --system --no-cache . && \
-    rm -rf app
+
+# Install dependencies
+RUN uv pip install --system --no-cache -r pyproject.toml
 
 # Copy application code
 COPY app/ app/
 COPY alembic/ alembic/
 COPY alembic.ini ./
-RUN uv pip install --system --no-cache .
 
 EXPOSE 8080
 
