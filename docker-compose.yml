@@ -67,9 +67,11 @@ services:
 
 networks:
   nanobot-internal:
+    name: nanobot-internal    # explicit name — prevents Compose project-name prefix
     driver: bridge
     internal: true   # no internet access — user containers cannot reach LLM APIs directly
   nanobot-external:
+    name: nanobot-external
     driver: bridge
 
 volumes:
