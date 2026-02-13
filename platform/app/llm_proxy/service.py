@@ -70,7 +70,7 @@ _TIER_LIMITS = {
 
 async def _check_quota(db: AsyncSession, user: User) -> None:
     """Raise 429 if the user exceeded their daily quota."""
-    today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
     result = await db.execute(
         select(func.coalesce(func.sum(UsageRecord.total_tokens), 0)).where(
             UsageRecord.user_id == user.id,
