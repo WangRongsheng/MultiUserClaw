@@ -4,7 +4,7 @@
 // Auth requests go to /api/auth/*, nanobot requests are proxied via
 // /api/nanobot/* to the user's container.
 
-import type { ChatMessage, Session, SessionDetail, SystemStatus, CronJob, Skill, TokenResponse, AuthUser } from '@/types';
+import type { ChatMessage, Session, SessionDetail, SystemStatus, CronJob, Skill, SlashCommand, PluginInfo, TokenResponse, AuthUser, FileAttachment } from '@/types';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
 
@@ -157,11 +157,16 @@ export async function getMe(): Promise<AuthUser> {
 
 export async function sendMessage(
   message: string,
-  sessionId: string = 'web:default'
+  sessionId: string = 'web:default',
+  attachments?: FileAttachment[]
 ): Promise<{ response?: string; status?: string; session_id: string }> {
+  const body: Record<string, unknown> = { message, session_id: sessionId };
+  if (attachments && attachments.length > 0) {
+    body.attachments = attachments;
+  }
   return fetchJSON('/api/nanobot/chat', {
     method: 'POST',
-    body: JSON.stringify({ message, session_id: sessionId }),
+    body: JSON.stringify(body),
   });
 }
 
@@ -238,6 +243,7 @@ export type WsMessageHandler = (data: {
   role?: string;
   content?: string;
   status?: string;
+  attachments?: FileAttachment[];
 }) => void;
 
 export type WsStatusListener = (status: WsStatus) => void;
@@ -280,6 +286,12 @@ class WebSocketManager {
   sendMessage(content: string): void {
     if (this.ws?.readyState === globalThis.WebSocket?.OPEN) {
       this.ws.send(JSON.stringify({ type: 'message', content }));
+    }
+  }
+
+  sendRaw(payload: Record<string, unknown>): void {
+    if (this.ws?.readyState === globalThis.WebSocket?.OPEN) {
+      this.ws.send(JSON.stringify(payload));
     }
   }
 
@@ -476,6 +488,14 @@ export async function listSkills(): Promise<Skill[]> {
   return fetchJSON('/api/nanobot/skills');
 }
 
+export async function listCommands(): Promise<SlashCommand[]> {
+  return fetchJSON('/api/nanobot/commands');
+}
+
+export async function listPlugins(): Promise<PluginInfo[]> {
+  return fetchJSON('/api/nanobot/plugins');
+}
+
 export async function downloadSkill(name: string): Promise<void> {
   const url = `${API_URL}/api/nanobot/skills/${encodeURIComponent(name)}/download`;
   const token = getAccessToken();
@@ -545,4 +565,65 @@ export async function uploadSkill(file: File): Promise<Skill> {
     throw new Error(`API error ${res.status}: ${text}`);
   }
   return res.json();
+}
+
+// ---------------------------------------------------------------------------
+// Files (proxied)
+// ---------------------------------------------------------------------------
+
+const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
+
+export async function uploadFile(
+  file: File,
+  sessionId: string = 'web:default',
+  onProgress?: (percent: number) => void
+): Promise<FileAttachment> {
+  if (file.size > MAX_FILE_SIZE) {
+    throw new Error('File too large (max 50MB)');
+  }
+
+  const formData = new FormData();
+  formData.append('file', file);
+  formData.append('session_id', sessionId);
+
+  const token = getAccessToken();
+
+  const result = await new Promise<FileAttachment>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', `${API_URL}/api/nanobot/files/upload`);
+    if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable && onProgress) {
+        onProgress(Math.round((e.loaded / e.total) * 100));
+      }
+    };
+
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        const data = JSON.parse(xhr.responseText);
+        resolve(data);
+      } else {
+        reject(new Error(`Upload failed: ${xhr.status}`));
+      }
+    };
+
+    xhr.onerror = () => reject(new Error('Upload failed'));
+    xhr.send(formData);
+  });
+
+  return result;
+}
+
+export async function listFiles(sessionId?: string): Promise<FileAttachment[]> {
+  const params = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : '';
+  return fetchJSON(`/api/nanobot/files${params}`);
+}
+
+export async function deleteFile(fileId: string): Promise<void> {
+  await fetchJSON(`/api/nanobot/files/${encodeURIComponent(fileId)}`, { method: 'DELETE' });
+}
+
+export function getFileUrl(fileId: string): string {
+  return `${API_URL}/api/nanobot/files/${encodeURIComponent(fileId)}`;
 }

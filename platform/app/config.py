@@ -25,6 +25,10 @@ class Settings(BaseSettings):
     moonshot_api_key: str = ""
     zhipu_api_key: str = ""
 
+    # Self-hosted vLLM / OpenAI-compatible local model
+    hosted_vllm_api_key: str = ""
+    hosted_vllm_api_base: str = ""  # e.g. "http://117.133.60.219:8900/v1"
+
     # Default model for new users
     default_model: str = "claude-sonnet-4-5"
 
@@ -48,6 +52,9 @@ class Settings(BaseSettings):
     # Platform gateway
     host: str = "0.0.0.0"
     port: int = 8080
+
+    # Local dev: set to e.g. "http://127.0.0.1:18080" to skip Docker containers
+    dev_nanobot_url: str = ""
 
     model_config = {"env_prefix": "PLATFORM_"}
 

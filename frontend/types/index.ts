@@ -17,10 +17,19 @@ export interface TokenResponse {
   role: string;
 }
 
+export interface FileAttachment {
+  file_id: string;
+  name: string;
+  content_type: string;
+  size?: number;
+  url?: string;
+}
+
 export interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
   timestamp?: string;
+  attachments?: FileAttachment[];
 }
 
 export interface Session {
@@ -72,6 +81,34 @@ export interface Skill {
   source: 'builtin' | 'workspace';
   available: boolean;
   path: string;
+}
+
+export interface SlashCommand {
+  name: string;
+  description: string;
+  argument_hint: string | null;
+  plugin_name: string;
+}
+
+export interface PluginAgent {
+  name: string;
+  description: string;
+  model: string | null;
+}
+
+export interface PluginCommand {
+  name: string;
+  description: string;
+  argument_hint: string | null;
+}
+
+export interface PluginInfo {
+  name: string;
+  description: string;
+  source: 'global' | 'workspace';
+  agents: PluginAgent[];
+  commands: PluginCommand[];
+  skills: string[];
 }
 
 export interface CronJob {

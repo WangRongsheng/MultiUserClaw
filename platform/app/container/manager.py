@@ -8,6 +8,7 @@ from pathlib import Path
 import docker
 from docker.errors import APIError as DockerAPIError, NotFound as DockerNotFound
 from sqlalchemy import select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -116,7 +117,15 @@ async def ensure_running(db: AsyncSession, user_id: str) -> Container:
     record = await get_container(db, user_id)
 
     if record is None:
-        return await create_container(db, user_id)
+        try:
+            return await create_container(db, user_id)
+        except IntegrityError:
+            # Race condition: another request created the container first
+            await db.rollback()
+            record = await get_container(db, user_id)
+            if record is not None:
+                return record
+            raise
 
     client = _docker()
 

@@ -20,8 +20,8 @@
   # 仅重启服务
   python deploy_docker.py --restart
 
-  # 重建某个服务
-  python deploy_docker.py --rebuild gateway
+  # 重建某个服务,同时指定host的ip
+  python deploy_docker.py --rebuild gateway --host 117.133.60.219
   python deploy_docker.py --rebuild frontend
 
   # 完全清理重建
@@ -112,12 +112,15 @@ def check_env_file():
         content = f.read()
 
     key_vars = [
-        "DASHSCOPE_API_KEY",
         "ANTHROPIC_API_KEY",
         "OPENAI_API_KEY",
         "DEEPSEEK_API_KEY",
         "OPENROUTER_API_KEY",
+        "DASHSCOPE_API_KEY",
         "AIHUBMIX_API_KEY",
+        "MOONSHOT_API_KEY",
+        "ZHIPU_API_KEY",
+        "HOSTED_VLLM_API_KEY",
     ]
     found_keys = []
     for var in key_vars:

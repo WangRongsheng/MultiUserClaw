@@ -44,10 +44,25 @@ def check_docker_containers() -> dict[str, dict]:
     return results
 
 
+def find_postgres_container() -> str | None:
+    """Find the postgres container name dynamically."""
+    ok, out = run_cmd([
+        "docker", "ps", "--filter", "name=postgres",
+        "--format", "{{.Names}}",
+    ])
+    if ok and out:
+        # Return first matching container
+        return out.splitlines()[0] if out.splitlines() else None
+    return None
+
+
 def check_postgres() -> tuple[bool, str]:
     """Check PostgreSQL via docker exec."""
+    container = find_postgres_container()
+    if not container:
+        return False, "PostgreSQL container not found"
     ok, out = run_cmd([
-        "docker", "exec", "nanobot-postgres-1",
+        "docker", "exec", container,
         "pg_isready", "-U", "nanobot", "-d", "nanobot_platform",
     ])
     return ok, out

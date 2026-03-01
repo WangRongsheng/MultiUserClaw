@@ -18,10 +18,11 @@ class SkillsLoader:
     specific tools or perform certain tasks.
     """
     
-    def __init__(self, workspace: Path, builtin_skills_dir: Path | None = None):
+    def __init__(self, workspace: Path, builtin_skills_dir: Path | None = None, extra_dirs: list[Path] | None = None):
         self.workspace = workspace
         self.workspace_skills = workspace / "skills"
         self.builtin_skills = builtin_skills_dir or BUILTIN_SKILLS_DIR
+        self.extra_dirs: list[Path] = extra_dirs or []
     
     def list_skills(self, filter_unavailable: bool = True) -> list[dict[str, str]]:
         """
@@ -43,6 +44,15 @@ class SkillsLoader:
                     if skill_file.exists():
                         skills.append({"name": skill_dir.name, "path": str(skill_file), "source": "workspace"})
         
+        # Plugin / extra_dirs skills (lower priority than workspace, higher than builtin)
+        for extra_dir in self.extra_dirs:
+            if extra_dir.exists():
+                for skill_dir in extra_dir.iterdir():
+                    if skill_dir.is_dir():
+                        skill_file = skill_dir / "SKILL.md"
+                        if skill_file.exists() and not any(s["name"] == skill_dir.name for s in skills):
+                            skills.append({"name": skill_dir.name, "path": str(skill_file), "source": "plugin"})
+
         # Built-in skills
         if self.builtin_skills and self.builtin_skills.exists():
             for skill_dir in self.builtin_skills.iterdir():
@@ -70,7 +80,13 @@ class SkillsLoader:
         workspace_skill = self.workspace_skills / name / "SKILL.md"
         if workspace_skill.exists():
             return workspace_skill.read_text(encoding="utf-8")
-        
+
+        # Check plugin / extra_dirs
+        for extra_dir in self.extra_dirs:
+            plugin_skill = extra_dir / name / "SKILL.md"
+            if plugin_skill.exists():
+                return plugin_skill.read_text(encoding="utf-8")
+
         # Check built-in
         if self.builtin_skills:
             builtin_skill = self.builtin_skills / name / "SKILL.md"

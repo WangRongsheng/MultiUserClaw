@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import {
   Send,
@@ -10,6 +10,8 @@ import {
   MessageSquare,
   User,
   Bot,
+  Paperclip,
+  X,
 } from 'lucide-react';
 import { useChatStore } from '@/lib/store';
 import {
@@ -18,11 +20,16 @@ import {
   deleteSession,
   sendMessage,
   wsManager,
+  listCommands,
+  getStatus,
+  uploadFile,
+  getFileUrl,
+  getAccessToken,
 } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
-import type { ChatMessage } from '@/types';
+import type { ChatMessage, SlashCommand, FileAttachment } from '@/types';
 
 export default function ChatPage() {
   const {
@@ -39,11 +46,40 @@ export default function ChatPage() {
     clearMessages,
     setWsStatus,
     setIsThinking,
+    setNanobotReady,
   } = useChatStore();
 
   const [input, setInput] = useState('');
+  const [commands, setCommands] = useState<SlashCommand[]>([]);
+  const [showCommandPicker, setShowCommandPicker] = useState(false);
+  const [pickerIndex, setPickerIndex] = useState(0);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const pickerRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [pendingFiles, setPendingFiles] = useState<
+    { file: File; id?: string; progress: number; error?: string }[]
+  >([]);
+
+  // Filtered commands shown in the picker
+  const filteredCommands = useMemo(() => {
+    if (!input.startsWith('/') || input.includes(' ')) return [];
+    const filter = input.slice(1).toLowerCase();
+    return commands.filter(
+      (c) => c.name.startsWith(filter) || (filter === '' ? true : c.name.includes(filter))
+    );
+  }, [input, commands]);
+
+  // Load commands on mount
+  useEffect(() => {
+    listCommands().then(setCommands).catch(() => {});
+  }, []);
+
+  // Show/reset picker when filtered list changes
+  useEffect(() => {
+    setShowCommandPicker(filteredCommands.length > 0);
+    setPickerIndex(0);
+  }, [filteredCommands]);
 
   // Load sessions on mount
   useEffect(() => {
@@ -52,22 +88,26 @@ export default function ChatPage() {
 
   // Connect WebSocket when sessionId changes
   useEffect(() => {
-    // Extract the part after "web:" for the WS session_id
-    const wsSessionId = sessionId.startsWith('web:')
-      ? sessionId.slice(4)
-      : sessionId;
-
+    const wsSessionId = sessionId.startsWith('web:') ? sessionId.slice(4) : sessionId;
     wsManager.connect(wsSessionId);
     loadSessionMessages(sessionId);
   }, [sessionId]);
 
   // Register WebSocket handlers
   useEffect(() => {
-    const unsubStatus = wsManager.onStatusChange((status) => {
+    const unsubStatus = wsManager.onStatusChange(async (status) => {
       setWsStatus(status);
-      // On reconnect, reload session to catch up on messages that arrived while offline
       if (status === 'connected') {
         loadSessionMessages(useChatStore.getState().sessionId);
+        // Check if the nanobot user backend is actually running
+        try {
+          await getStatus();
+          setNanobotReady(true);
+        } catch {
+          setNanobotReady(false);
+        }
+      } else {
+        setNanobotReady(null);
       }
     });
 
@@ -81,6 +121,7 @@ export default function ChatPage() {
           role: 'assistant',
           content: data.content || '',
           timestamp: new Date().toISOString(),
+          attachments: data.attachments,
         });
         loadSessions();
       }
@@ -96,6 +137,13 @@ export default function ChatPage() {
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, isThinking]);
+
+  // Scroll picker selected item into view
+  useEffect(() => {
+    if (!showCommandPicker || !pickerRef.current) return;
+    const item = pickerRef.current.children[pickerIndex] as HTMLElement | undefined;
+    item?.scrollIntoView({ block: 'nearest' });
+  }, [pickerIndex, showCommandPicker]);
 
   const loadSessions = async () => {
     try {
@@ -115,47 +163,132 @@ export default function ChatPage() {
     }
   };
 
+  const selectCommand = useCallback((cmd: SlashCommand) => {
+    // If command takes arguments, leave a trailing space for the user to type
+    setInput(cmd.argument_hint ? `/${cmd.name} ` : `/${cmd.name}`);
+    setShowCommandPicker(false);
+    textareaRef.current?.focus();
+  }, []);
+
   const handleSend = useCallback(async () => {
     const text = input.trim();
-    if (!text || isLoading) return;
+    if ((!text && pendingFiles.length === 0) || isLoading) return;
+
+    const readyFiles = pendingFiles.filter((p) => p.id && !p.error);
+    const attachments: FileAttachment[] = readyFiles.map((p) => ({
+      file_id: p.id!,
+      name: p.file.name,
+      content_type: p.file.type || 'application/octet-stream',
+      size: p.file.size,
+    }));
 
     setInput('');
+    setPendingFiles([]);
+    setShowCommandPicker(false);
+
+    const msgContent = text || '(attached files)';
     const userMsg: ChatMessage = {
       role: 'user',
-      content: text,
+      content: msgContent,
       timestamp: new Date().toISOString(),
+      attachments: attachments.length > 0 ? attachments : undefined,
     };
     addMessage(userMsg);
     setIsLoading(true);
     setIsThinking(false);
 
-    // Send via WebSocket if connected, otherwise fallback to HTTP POST
-    const wsSessionId = sessionId.startsWith('web:')
-      ? sessionId.slice(4)
-      : sessionId;
-
     if (wsManager.getStatus() === 'connected') {
-      wsManager.sendMessage(text);
+      const wsPayload: Record<string, unknown> = { type: 'message', content: msgContent };
+      if (attachments.length > 0) {
+        wsPayload.attachments = attachments;
+      }
+      wsManager.sendRaw(wsPayload);
     } else {
       try {
-        await sendMessage(text, sessionId);
+        await sendMessage(msgContent, sessionId, attachments.length > 0 ? attachments : undefined);
       } catch {
         setIsLoading(false);
         addMessage({
           role: 'assistant',
-          content: 'Error: Failed to send message. Is the backend running?',
+          content: 'Failed to send. Check if the backend is running.',
           timestamp: new Date().toISOString(),
         });
       }
     }
-  }, [input, isLoading, sessionId]);
+  }, [input, isLoading, sessionId, pendingFiles]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
+    if (showCommandPicker && filteredCommands.length > 0) {
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setPickerIndex((i) => (i <= 0 ? filteredCommands.length - 1 : i - 1));
+        return;
+      }
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setPickerIndex((i) => (i >= filteredCommands.length - 1 ? 0 : i + 1));
+        return;
+      }
+      if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing)) {
+        e.preventDefault();
+        selectCommand(filteredCommands[pickerIndex]);
+        return;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setShowCommandPicker(false);
+        return;
+      }
+    }
+    if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
       e.preventDefault();
       handleSend();
     }
   };
+
+  const handleFileSelect = useCallback(
+    async (e: React.ChangeEvent<HTMLInputElement>) => {
+      const files = Array.from(e.target.files || []);
+      if (!files.length) return;
+      e.target.value = '';
+
+      for (const file of files) {
+        if (file.size > 50 * 1024 * 1024) {
+          setPendingFiles((prev) => [
+            ...prev,
+            { file, progress: 0, error: 'File too large (max 50MB)' },
+          ]);
+          continue;
+        }
+
+        setPendingFiles((prev) => [...prev, { file, progress: 0 }]);
+
+        try {
+          const result = await uploadFile(file, sessionId, (pct) => {
+            setPendingFiles((prev) =>
+              prev.map((p) => (p.file === file ? { ...p, progress: pct } : p))
+            );
+          });
+          setPendingFiles((prev) =>
+            prev.map((p) =>
+              p.file === file ? { ...p, id: result.file_id, progress: 100 } : p
+            )
+          );
+        } catch (err: any) {
+          setPendingFiles((prev) =>
+            prev.map((p) =>
+              p.file === file ? { ...p, error: err.message || 'Upload failed' } : p
+            )
+          );
+        }
+      }
+    },
+    [sessionId]
+  );
+
+  const removePendingFile = useCallback((file: File) => {
+    setPendingFiles((prev) => prev.filter((p) => p.file !== file));
+  }, []);
 
   const handleNewSession = () => {
     const id = `web:${Date.now()}`;
@@ -184,10 +317,10 @@ export default function ChatPage() {
   const formatSessionName = (key: string) => {
     if (key.startsWith('web:')) {
       const id = key.slice(4);
-      if (id === 'default') return 'Default';
+      if (id === 'default') return '默认';
       const n = Number(id);
       if (!isNaN(n)) {
-        return new Date(n).toLocaleDateString(undefined, {
+        return new Date(n).toLocaleDateString('zh-CN', {
           month: 'short',
           day: 'numeric',
           hour: '2-digit',
@@ -211,7 +344,7 @@ export default function ChatPage() {
             size="sm"
           >
             <Plus className="w-4 h-4" />
-            New Chat
+            新对话
           </Button>
         </div>
         <Separator />
@@ -219,7 +352,7 @@ export default function ChatPage() {
           <div className="p-2 space-y-1">
             {sessions.length === 0 && (
               <p className="text-xs text-muted-foreground px-2 py-4 text-center">
-                No conversations yet
+                暂无对话记录
               </p>
             )}
             {sessions.map((s) => (
@@ -257,7 +390,7 @@ export default function ChatPage() {
               <div className="flex flex-col items-center justify-center py-20 text-muted-foreground">
                 <Bot className="w-12 h-12 mb-4 opacity-50" />
                 <p className="text-lg font-medium">nanobot</p>
-                <p className="text-sm">Send a message to start chatting</p>
+                <p className="text-sm">发送消息开始对话</p>
               </div>
             )}
 
@@ -266,11 +399,14 @@ export default function ChatPage() {
             ))}
 
             {/* Thinking indicator */}
-            {(isThinking || (isLoading && messages.length > 0 && messages[messages.length - 1]?.role === 'user')) && (
+            {(isThinking ||
+              (isLoading &&
+                messages.length > 0 &&
+                messages[messages.length - 1]?.role === 'user')) && (
               <div className="flex items-center gap-2 text-muted-foreground">
                 <Bot className="w-5 h-5" />
                 <Loader2 className="w-4 h-4 animate-spin" />
-                <span className="text-sm">Thinking...</span>
+                <span className="text-sm">思考中...</span>
               </div>
             )}
 
@@ -280,35 +416,162 @@ export default function ChatPage() {
 
         {/* Input area */}
         <div className="border-t border-border p-4">
-          <div className="max-w-3xl mx-auto flex gap-2">
-            <textarea
-              ref={textareaRef}
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={handleKeyDown}
-              placeholder="Type a message... (Enter to send, Shift+Enter for newline)"
-              rows={1}
-              className="flex-1 resize-none rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
-              style={{ minHeight: '40px', maxHeight: '200px' }}
-              onInput={(e) => {
-                const target = e.target as HTMLTextAreaElement;
-                target.style.height = 'auto';
-                target.style.height = `${Math.min(target.scrollHeight, 200)}px`;
-              }}
-            />
-            <Button
-              onClick={handleSend}
-              disabled={!input.trim() || isLoading}
-              size="icon"
-              className="h-10 w-10 flex-shrink-0"
-            >
-              <Send className="w-4 h-4" />
-            </Button>
+          <div className="max-w-3xl mx-auto">
+            {/* Pending file attachments */}
+            {pendingFiles.length > 0 && (
+              <div className="mb-2 space-y-1">
+                {pendingFiles.map((pf, i) => (
+                  <div
+                    key={i}
+                    className="flex items-center gap-2 px-3 py-1.5 bg-muted rounded-md text-sm"
+                  >
+                    <span className="truncate flex-1">
+                      {pf.file.name}{' '}
+                      <span className="text-muted-foreground">
+                        ({(pf.file.size / 1024).toFixed(0)}KB)
+                      </span>
+                    </span>
+                    {pf.error ? (
+                      <span className="text-destructive text-xs">{pf.error}</span>
+                    ) : pf.progress < 100 ? (
+                      <div className="w-20 h-1.5 bg-muted-foreground/20 rounded-full overflow-hidden">
+                        <div
+                          className="h-full bg-primary rounded-full transition-all"
+                          style={{ width: `${pf.progress}%` }}
+                        />
+                      </div>
+                    ) : (
+                      <span className="text-green-500 text-xs">ready</span>
+                    )}
+                    <button
+                      onClick={() => removePendingFile(pf.file)}
+                      className="text-muted-foreground hover:text-foreground"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <div className="relative flex gap-2">
+              {/* Slash command picker */}
+              {showCommandPicker && filteredCommands.length > 0 && (
+                <div
+                  ref={pickerRef}
+                  className="absolute bottom-full left-0 right-10 mb-2 bg-popover border border-border rounded-lg shadow-lg overflow-y-auto max-h-60 z-50"
+                >
+                  {filteredCommands.map((cmd, i) => (
+                    <button
+                      key={cmd.name}
+                      className={`w-full text-left px-3 py-2 flex items-center gap-2 text-sm transition-colors ${
+                        i === pickerIndex
+                          ? 'bg-accent text-accent-foreground'
+                          : 'hover:bg-accent/50 text-foreground'
+                      }`}
+                      onMouseDown={(e) => {
+                        e.preventDefault();
+                        selectCommand(cmd);
+                      }}
+                      onMouseEnter={() => setPickerIndex(i)}
+                    >
+                      <span className="font-mono font-semibold text-primary shrink-0">
+                        /{cmd.name}
+                      </span>
+                      {cmd.argument_hint && (
+                        <span className="text-muted-foreground text-xs shrink-0">
+                          {cmd.argument_hint}
+                        </span>
+                      )}
+                      <span className="text-muted-foreground text-xs truncate ml-auto">
+                        {cmd.description}
+                      </span>
+                      {cmd.plugin_name !== 'builtin' && (
+                        <span className="text-xs bg-muted px-1 rounded shrink-0">
+                          {cmd.plugin_name}
+                        </span>
+                      )}
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              <input
+                ref={fileInputRef}
+                type="file"
+                multiple
+                className="hidden"
+                onChange={handleFileSelect}
+              />
+
+              <Button
+                onClick={() => fileInputRef.current?.click()}
+                variant="ghost"
+                size="icon"
+                className="h-10 w-10 flex-shrink-0"
+                title="Attach file"
+              >
+                <Paperclip className="w-4 h-4" />
+              </Button>
+
+              <textarea
+                ref={textareaRef}
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={handleKeyDown}
+                placeholder="输入消息或 / 呼出命令…（Enter 发送，Shift+Enter 换行）"
+                rows={1}
+                className="flex-1 resize-none rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+                style={{ minHeight: '40px', maxHeight: '200px' }}
+                onInput={(e) => {
+                  const target = e.target as HTMLTextAreaElement;
+                  target.style.height = 'auto';
+                  target.style.height = `${Math.min(target.scrollHeight, 200)}px`;
+                }}
+              />
+              <Button
+                onClick={handleSend}
+                disabled={
+                  (!input.trim() && pendingFiles.filter((p) => p.id && !p.error).length === 0) ||
+                  isLoading
+                }
+                size="icon"
+                className="h-10 w-10 flex-shrink-0"
+              >
+                <Send className="w-4 h-4" />
+              </Button>
+            </div>
           </div>
         </div>
       </div>
     </div>
   );
+}
+
+function AuthImage({ src, alt, className }: { src: string; alt: string; className?: string }) {
+  const [blobUrl, setBlobUrl] = React.useState<string | null>(null);
+
+  React.useEffect(() => {
+    const token = getAccessToken();
+    const headers: Record<string, string> = {};
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+
+    let revoke: string | null = null;
+    fetch(src, { headers })
+      .then((res) => res.blob())
+      .then((blob) => {
+        revoke = URL.createObjectURL(blob);
+        setBlobUrl(revoke);
+      })
+      .catch(() => {});
+
+    return () => {
+      if (revoke) URL.revokeObjectURL(revoke);
+    };
+  }, [src]);
+
+  if (!blobUrl) return <div className="w-32 h-32 bg-muted animate-pulse rounded" />;
+  return <img src={blobUrl} alt={alt} className={className} />;
 }
 
 function MessageBubble({
@@ -329,11 +592,52 @@ function MessageBubble({
       )}
       <div
         className={`rounded-lg px-4 py-2 max-w-[80%] ${
-          isUser
-            ? 'bg-primary text-primary-foreground'
-            : 'bg-card border border-border'
+          isUser ? 'bg-primary text-primary-foreground' : 'bg-card border border-border'
         }`}
       >
+        {/* Attachments */}
+        {message.attachments && message.attachments.length > 0 && (
+          <div className="mb-2 space-y-2">
+            {message.attachments.map((att) => {
+              const fileUrl = getFileUrl(att.file_id);
+              if (att.content_type.startsWith('image/')) {
+                return (
+                  <a key={att.file_id} href={fileUrl} target="_blank" rel="noopener noreferrer">
+                    <AuthImage
+                      src={fileUrl}
+                      alt={att.name}
+                      className="max-w-xs max-h-60 rounded border border-border/50 cursor-pointer hover:opacity-90"
+                    />
+                  </a>
+                );
+              }
+              return (
+                <a
+                  key={att.file_id}
+                  href={fileUrl}
+                  download={att.name}
+                  className={`flex items-center gap-2 px-3 py-2 rounded-md text-sm ${
+                    isUser
+                      ? 'bg-primary-foreground/10 hover:bg-primary-foreground/20'
+                      : 'bg-muted hover:bg-muted/80'
+                  }`}
+                >
+                  <Paperclip className="w-3.5 h-3.5 flex-shrink-0" />
+                  <span className="truncate">{att.name}</span>
+                  {att.size && (
+                    <span className="text-xs opacity-70 flex-shrink-0">
+                      {att.size > 1024 * 1024
+                        ? `${(att.size / 1024 / 1024).toFixed(1)}MB`
+                        : `${(att.size / 1024).toFixed(0)}KB`}
+                    </span>
+                  )}
+                </a>
+              );
+            })}
+          </div>
+        )}
+
+        {/* Text content */}
         {isUser ? (
           <p className="text-sm whitespace-pre-wrap">{message.content}</p>
         ) : (

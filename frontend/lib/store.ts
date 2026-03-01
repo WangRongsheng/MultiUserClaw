@@ -16,6 +16,8 @@ interface ChatStore {
   // WebSocket state
   wsStatus: WsStatus;
   isThinking: boolean;
+  // null = unknown/checking, true = running, false = offline
+  nanobotReady: boolean | null;
 
   // Session list
   sessions: Session[];
@@ -33,6 +35,7 @@ interface ChatStore {
   clearMessages: () => void;
   setWsStatus: (status: WsStatus) => void;
   setIsThinking: (thinking: boolean) => void;
+  setNanobotReady: (ready: boolean | null) => void;
 }
 
 export const useChatStore = create<ChatStore>((set) => ({
@@ -44,6 +47,7 @@ export const useChatStore = create<ChatStore>((set) => ({
   streamingContent: '',
   wsStatus: 'disconnected',
   isThinking: false,
+  nanobotReady: null,
   sessions: [],
 
   setUser: (user) => set({ user }),
@@ -59,4 +63,5 @@ export const useChatStore = create<ChatStore>((set) => ({
   clearMessages: () => set({ messages: [], streamingContent: '' }),
   setWsStatus: (status) => set({ wsStatus: status }),
   setIsThinking: (thinking) => set({ isThinking: thinking }),
+  setNanobotReady: (ready) => set({ nanobotReady: ready }),
 }));

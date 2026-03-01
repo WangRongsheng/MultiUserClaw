@@ -1,7 +1,7 @@
 # 统一主版本，Next 15 建议 Node 20
 ARG NODE_VERSION=20
 
-FROM node:${NODE_VERSION}-alpine AS base
+FROM node:20-alpine AS base
 WORKDIR /app
 ENV CI=1 NEXT_TELEMETRY_DISABLED=1
 

@@ -50,7 +50,7 @@ export default function AuthGuard({ children }: { children: React.ReactNode }) {
   if (isAuthLoading) {
     return (
       <div className="flex min-h-[calc(100vh-3.5rem)] items-center justify-center">
-        <div className="text-muted-foreground">Loading...</div>
+        <div className="text-muted-foreground">加载中...</div>
       </div>
     );
   }

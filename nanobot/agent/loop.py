@@ -13,6 +13,7 @@ from loguru import logger
 
 from nanobot.agent.context import ContextBuilder
 from nanobot.agent.memory import MemoryStore
+from nanobot.agent.plugins import PluginLoader
 from nanobot.agent.subagent import SubagentManager
 from nanobot.agent.tools.cron import CronTool
 from nanobot.agent.tools.filesystem import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
@@ -76,7 +77,8 @@ class AgentLoop:
         self.cron_service = cron_service
         self.restrict_to_workspace = restrict_to_workspace
 
-        self.context = ContextBuilder(workspace)
+        self.plugins = PluginLoader(workspace)
+        self.context = ContextBuilder(workspace, plugin_loader=self.plugins)
         self.sessions = session_manager or SessionManager(workspace)
         self.tools = ToolRegistry()
         self.subagents = SubagentManager(
@@ -89,6 +91,7 @@ class AgentLoop:
             brave_api_key=brave_api_key,
             exec_config=self.exec_config,
             restrict_to_workspace=restrict_to_workspace,
+            plugin_loader=self.plugins,
         )
 
         self._running = False
@@ -226,6 +229,9 @@ class AgentLoop:
                     )
             else:
                 final_content = self._strip_think(response.content)
+                messages = self.context.add_assistant_message(
+                    messages, response.content, reasoning_content=response.reasoning_content
+                )
                 break
 
         if final_content is None and iteration >= self.max_iterations:
@@ -234,6 +240,7 @@ class AgentLoop:
                 f"I reached the maximum number of tool call iterations ({self.max_iterations}) "
                 "without completing the task. You can try breaking the task into smaller steps."
             )
+            messages = self.context.add_assistant_message(messages, final_content)
 
         return final_content, tools_used, messages
 
@@ -357,8 +364,34 @@ class AgentLoop:
             return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id,
                                   content="New session started.")
         if cmd == "/help":
+            help_lines = ["🐈 nanobot commands:", "/new — Start a new conversation", "/help — Show available commands"]
+            plugin_cmd_lines = []
+            for plugin in self.plugins.plugins.values():
+                for plugin_cmd in plugin.commands.values():
+                    hint = f" {plugin_cmd.argument_hint}" if plugin_cmd.argument_hint else ""
+                    plugin_cmd_lines.append(f"/{plugin_cmd.name}{hint} — {plugin_cmd.description}")
+            if plugin_cmd_lines:
+                help_lines.append("\nPlugin commands:")
+                help_lines.extend(plugin_cmd_lines)
             return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id,
-                                  content="🐈 nanobot commands:\n/new — Start a new conversation\n/help — Show available commands")
+                                   content="\n".join(help_lines))
+
+        # Plugin slash commands
+        stripped = msg.content.strip()
+        if stripped.startswith("/"):
+            import dataclasses
+            parts_cmd = stripped[1:].split(None, 1)
+            cmd_name = parts_cmd[0].lower()
+            cmd_args = parts_cmd[1] if len(parts_cmd) > 1 else ""
+            if cmd_name not in ("new", "help"):
+                plugin_cmd = self.plugins.find_command(cmd_name)
+                if plugin_cmd is not None:
+                    expanded = plugin_cmd.expand(cmd_args)
+                    msg = dataclasses.replace(
+                        msg,
+                        content=f"[Plugin command: /{cmd_name} {cmd_args}]\n\n{expanded}",
+                    )
+                    logger.info("Expanded plugin command /{} -> {} chars", cmd_name, len(expanded))
 
         unconsolidated = len(session.messages) - session.last_consolidated
         if (unconsolidated >= self.memory_window and session.key not in self._consolidating):

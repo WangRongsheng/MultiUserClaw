@@ -9,7 +9,7 @@ import zipfile
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, UploadFile, File
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from loguru import logger
@@ -35,6 +35,7 @@ if TYPE_CHECKING:
 class ChatRequest(BaseModel):
     message: str
     session_id: str = "web:default"
+    attachments: list[dict[str, str]] | None = None
 
 
 class ChatResponse(BaseModel):
@@ -181,6 +182,16 @@ def _register_routes(app: FastAPI) -> None:
         session_key = req.session_id
         chat_id = session_key.split(":", 1)[-1] if ":" in session_key else session_key
 
+        # Resolve attachment file paths
+        media_paths: list[str] = []
+        if req.attachments:
+            from nanobot.web.files import get_file_path
+            config_ref: Config = app.state.config
+            for att in req.attachments:
+                fpath = get_file_path(config_ref.workspace_path, att.get("file_id", ""))
+                if fpath:
+                    media_paths.append(str(fpath))
+
         web_channel: "WebChannel | None" = app.state.web_channel
 
         if web_channel is not None:
@@ -189,6 +200,8 @@ def _register_routes(app: FastAPI) -> None:
                 sender_id="web_user",
                 chat_id=chat_id,
                 content=req.message,
+                media=media_paths or None,
+                metadata={"attachments": req.attachments} if req.attachments else None,
             )
             # Notify connected clients that processing started
             await web_channel.notify_thinking(chat_id)
@@ -274,12 +287,25 @@ def _register_routes(app: FastAPI) -> None:
                     if not content:
                         continue
 
+                    # Extract file attachments if present
+                    attachments = data.get("attachments") or []
+                    media_paths: list[str] = []
+                    if attachments:
+                        from nanobot.web.files import get_file_path
+                        config_ref: Config = app.state.config
+                        for att in attachments:
+                            fpath = get_file_path(config_ref.workspace_path, att.get("file_id", ""))
+                            if fpath:
+                                media_paths.append(str(fpath))
+
                     if web_channel is not None:
                         # Gateway mode – publish via bus
                         await web_channel._handle_message(
                             sender_id="web_user",
                             chat_id=session_id,
                             content=content,
+                            media=media_paths or None,
+                            metadata={"attachments": attachments} if attachments else None,
                         )
                         await web_channel.notify_thinking(session_id)
                     else:
@@ -321,12 +347,33 @@ def _register_routes(app: FastAPI) -> None:
         """Get a session's message history."""
         sm: SessionManager = app.state.session_manager
         session = sm.get_or_create(key)
+        # Filter out tool messages and assistant messages with tool_calls
+        # (intermediate steps), only keep user messages and final assistant replies
+        visible_messages = []
+        for m in session.messages:
+            role = m.get("role", "")
+            # Skip tool result messages (e.g. SKILL.md content, file reads, etc.)
+            if role == "tool":
+                continue
+            # Skip assistant messages that are just tool call requests (not final replies)
+            if role == "assistant" and m.get("tool_calls"):
+                continue
+            msg_data: dict[str, Any] = {
+                "role": role,
+                "content": m.get("content", ""),
+                "timestamp": m.get("timestamp"),
+            }
+            # Include attachments if stored in metadata
+            meta = m.get("metadata")
+            if isinstance(meta, dict):
+                attachments = meta.get("attachments")
+                if attachments:
+                    msg_data["attachments"] = attachments
+            visible_messages.append(msg_data)
+
         return {
             "key": session.key,
-            "messages": [
-                {"role": m["role"], "content": m["content"], "timestamp": m.get("timestamp")}
-                for m in session.messages
-            ],
+            "messages": visible_messages,
             "created_at": session.created_at.isoformat(),
             "updated_at": session.updated_at.isoformat(),
         }
@@ -593,6 +640,147 @@ def _register_routes(app: FastAPI) -> None:
             "available": available,
             "path": str(loader.workspace_skills / skill_name / "SKILL.md"),
         }
+
+    # ------ Files ------
+
+    MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB
+
+    @app.post("/api/files/upload")
+    async def upload_file(
+        file: UploadFile = File(...),
+        session_id: str = Form("web:default"),
+    ):
+        """Upload a file for chat attachment or analysis."""
+        from nanobot.web.files import save_file, generate_file_id
+
+        if not file.filename:
+            raise HTTPException(status_code=400, detail="No filename provided")
+
+        content = await file.read()
+        if len(content) > MAX_FILE_SIZE:
+            raise HTTPException(status_code=413, detail="File too large (max 50MB)")
+
+        file_id = generate_file_id()
+        ct = file.content_type or "application/octet-stream"
+        config: Config = app.state.config
+        metadata = save_file(
+            workspace=config.workspace_path,
+            file_id=file_id,
+            filename=file.filename,
+            content=content,
+            content_type=ct,
+            session_id=session_id,
+        )
+        metadata["url"] = f"/api/files/{file_id}"
+        return metadata
+
+    @app.get("/api/files")
+    async def list_uploaded_files(session_id: str | None = None):
+        """List uploaded files, optionally filtered by session."""
+        from nanobot.web.files import list_files
+
+        config: Config = app.state.config
+        return list_files(config.workspace_path, session_id=session_id)
+
+    @app.get("/api/files/{file_id}")
+    async def download_file(file_id: str):
+        """Download a file by ID."""
+        from nanobot.web.files import get_file_metadata, get_file_path
+
+        config: Config = app.state.config
+        meta = get_file_metadata(config.workspace_path, file_id)
+        if meta is None:
+            raise HTTPException(status_code=404, detail="File not found")
+
+        file_path = get_file_path(config.workspace_path, file_id)
+        if file_path is None:
+            raise HTTPException(status_code=404, detail="File data missing")
+
+        ct = meta.get("content_type", "application/octet-stream")
+        disposition = "inline" if ct.startswith("image/") else "attachment"
+        filename = meta["name"]
+
+        from fastapi.responses import Response
+        return Response(
+            content=file_path.read_bytes(),
+            media_type=ct,
+            headers={"Content-Disposition": f'{disposition}; filename="{filename}"'},
+        )
+
+    @app.delete("/api/files/{file_id}")
+    async def remove_file(file_id: str):
+        """Delete a file."""
+        from nanobot.web.files import delete_file
+
+        config: Config = app.state.config
+        if delete_file(config.workspace_path, file_id):
+            return {"ok": True}
+        raise HTTPException(status_code=404, detail="File not found")
+
+    # ------ Plugins ------
+
+    @app.get("/api/plugins")
+    async def list_plugins():
+        """List all loaded plugins with their agents, commands, and skills."""
+        from nanobot.agent.plugins import PluginLoader
+
+        config: Config = app.state.config
+        loader = PluginLoader(config.workspace_path)
+
+        result = []
+        for plugin in loader.plugins.values():
+            result.append({
+                "name": plugin.name,
+                "description": plugin.description,
+                "source": plugin.source,
+                "agents": [
+                    {
+                        "name": a.name,
+                        "description": a.description,
+                        "model": a.model,
+                    }
+                    for a in plugin.agents.values()
+                ],
+                "commands": [
+                    {
+                        "name": c.name,
+                        "description": c.description,
+                        "argument_hint": c.argument_hint,
+                    }
+                    for c in plugin.commands.values()
+                ],
+                "skills": [
+                    skill_dir.name
+                    for skill_dir_root in plugin.skill_dirs
+                    for skill_dir in sorted(skill_dir_root.iterdir())
+                    if skill_dir.is_dir() and (skill_dir / "SKILL.md").exists()
+                ],
+            })
+        return result
+
+    # ------ Commands (plugin slash commands) ------
+
+    @app.get("/api/commands")
+    async def list_commands():
+        """List all available slash commands (built-ins + plugin commands)."""
+        from nanobot.agent.plugins import PluginLoader
+
+        config: Config = app.state.config
+        loader = PluginLoader(config.workspace_path)
+
+        commands = [
+            {"name": "new", "description": "Start a new conversation", "argument_hint": None, "plugin_name": "builtin"},
+            {"name": "help", "description": "Show available commands", "argument_hint": None, "plugin_name": "builtin"},
+        ]
+        for plugin in loader.plugins.values():
+            for cmd in plugin.commands.values():
+                commands.append({
+                    "name": cmd.name,
+                    "description": cmd.description,
+                    "argument_hint": cmd.argument_hint,
+                    "plugin_name": cmd.plugin_name,
+                })
+        return commands
 
     # ------ Health ------
 

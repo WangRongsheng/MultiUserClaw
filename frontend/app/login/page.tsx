@@ -29,7 +29,7 @@ export default function LoginPage() {
       });
       router.push('/');
     } catch (err: any) {
-      setError(err.message || 'Login failed');
+      setError(err.message || '登录失败，请检查用户名和密码');
     } finally {
       setLoading(false);
     }
@@ -40,7 +40,7 @@ export default function LoginPage() {
       <div className="w-full max-w-sm space-y-6">
         <div className="text-center">
           <span className="text-4xl">🐈</span>
-          <h1 className="mt-2 text-2xl font-bold">Sign in to Nanobot</h1>
+          <h1 className="mt-2 text-2xl font-bold">登录 Nanobot</h1>
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-4">
@@ -52,7 +52,7 @@ export default function LoginPage() {
 
           <div>
             <label htmlFor="username" className="block text-sm font-medium text-muted-foreground mb-1">
-              Username or Email
+              用户名或邮箱
             </label>
             <input
               id="username"
@@ -61,13 +61,13 @@ export default function LoginPage() {
               onChange={(e) => setUsername(e.target.value)}
               required
               className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
-              placeholder="username"
+              placeholder="用户名"
             />
           </div>
 
           <div>
             <label htmlFor="password" className="block text-sm font-medium text-muted-foreground mb-1">
-              Password
+              密码
             </label>
             <input
               id="password"
@@ -76,7 +76,7 @@ export default function LoginPage() {
               onChange={(e) => setPassword(e.target.value)}
               required
               className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
-              placeholder="password"
+              placeholder="密码"
             />
           </div>
 
@@ -85,14 +85,14 @@ export default function LoginPage() {
             disabled={loading}
             className="w-full rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
           >
-            {loading ? 'Signing in...' : 'Sign in'}
+            {loading ? '登录中...' : '登录'}
           </button>
         </form>
 
         <p className="text-center text-sm text-muted-foreground">
-          Don&apos;t have an account?{' '}
+          还没有账号？{' '}
           <Link href="/register" className="text-primary hover:underline">
-            Sign up
+            注册
           </Link>
         </p>
       </div>

@@ -98,11 +98,15 @@ class WebChannel(BaseChannel):
 
     async def send(self, msg: OutboundMessage) -> None:
         """Push an outbound message to all connected WebSocket clients for this chat_id."""
-        payload = json.dumps({
+        payload_dict: dict[str, Any] = {
             "type": "message",
             "role": "assistant",
             "content": msg.content,
-        })
+        }
+        attachments = msg.metadata.get("attachments")
+        if attachments:
+            payload_dict["attachments"] = attachments
+        payload = json.dumps(payload_dict)
         await self._broadcast(msg.chat_id, payload)
 
     # ------------------------------------------------------------------

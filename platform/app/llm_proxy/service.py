@@ -46,6 +46,13 @@ def _resolve_provider(model: str) -> tuple[str, str, str | None]:
     """Return (litellm_model_name, api_key, api_base_or_None) for the given model."""
     model_lower = model.lower()
 
+    # Self-hosted vLLM: when configured, use it for the default model.
+    # This takes priority so that e.g. a VLLM-served "Qwen3-14B" isn't
+    # accidentally routed to DashScope via the "qwen" keyword.
+    if settings.hosted_vllm_api_base:
+        vllm_key = settings.hosted_vllm_api_key or "dummy"
+        return f"hosted_vllm/{model}", vllm_key, settings.hosted_vllm_api_base
+
     # Check custom-base providers first (DashScope, AiHubMix, etc.)
     for keyword, (api_base, key_attr) in _CUSTOM_BASE_PROVIDERS.items():
         if keyword in model_lower:

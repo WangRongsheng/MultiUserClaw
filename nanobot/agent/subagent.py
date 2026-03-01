@@ -12,6 +12,7 @@ from nanobot.bus.events import InboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.providers.base import LLMProvider
 from nanobot.agent.tools.registry import ToolRegistry
+from nanobot.agent.plugins import PluginLoader
 from nanobot.agent.tools.filesystem import ReadFileTool, WriteFileTool, EditFileTool, ListDirTool
 from nanobot.agent.tools.shell import ExecTool
 from nanobot.agent.tools.web import WebSearchTool, WebFetchTool
@@ -37,6 +38,7 @@ class SubagentManager:
         brave_api_key: str | None = None,
         exec_config: "ExecToolConfig | None" = None,
         restrict_to_workspace: bool = False,
+        plugin_loader: PluginLoader | None = None,
     ):
         from nanobot.config.schema import ExecToolConfig
         self.provider = provider
@@ -48,6 +50,7 @@ class SubagentManager:
         self.brave_api_key = brave_api_key
         self.exec_config = exec_config or ExecToolConfig()
         self.restrict_to_workspace = restrict_to_workspace
+        self.plugin_loader = plugin_loader
         self._running_tasks: dict[str, asyncio.Task[None]] = {}
     
     async def spawn(
@@ -56,30 +59,44 @@ class SubagentManager:
         label: str | None = None,
         origin_channel: str = "cli",
         origin_chat_id: str = "direct",
+        agent_name: str | None = None,
     ) -> str:
         """
         Spawn a subagent to execute a task in the background.
-        
+
         Args:
             task: The task description for the subagent.
             label: Optional human-readable label for the task.
             origin_channel: The channel to announce results to.
             origin_chat_id: The chat ID to announce results to.
-        
+            agent_name: Optional plugin agent name to use as the system prompt.
+
         Returns:
             Status message indicating the subagent was started.
         """
         task_id = str(uuid.uuid4())[:8]
         display_label = label or task[:30] + ("..." if len(task) > 30 else "")
-        
+
         origin = {
             "channel": origin_channel,
             "chat_id": origin_chat_id,
         }
-        
+
+        # Resolve plugin agent overrides
+        custom_system_prompt: str | None = None
+        custom_model: str | None = None
+        if agent_name and self.plugin_loader:
+            agent = self.plugin_loader.find_agent(agent_name)
+            if agent:
+                custom_system_prompt = agent.system_prompt
+                custom_model = agent.model
+                logger.info("Using plugin agent '{}' for subagent [{}]", agent_name, task_id)
+            else:
+                logger.warning("Plugin agent '{}' not found, using default prompt", agent_name)
+
         # Create background task
         bg_task = asyncio.create_task(
-            self._run_subagent(task_id, task, display_label, origin)
+            self._run_subagent(task_id, task, display_label, origin, custom_system_prompt, custom_model)
         )
         self._running_tasks[task_id] = bg_task
         
@@ -95,10 +112,12 @@ class SubagentManager:
         task: str,
         label: str,
         origin: dict[str, str],
+        custom_system_prompt: str | None = None,
+        custom_model: str | None = None,
     ) -> None:
         """Execute the subagent task and announce the result."""
         logger.info("Subagent [{}] starting task: {}", task_id, label)
-        
+
         try:
             # Build subagent tools (no message tool, no spawn tool)
             tools = ToolRegistry()
@@ -114,26 +133,27 @@ class SubagentManager:
             ))
             tools.register(WebSearchTool(api_key=self.brave_api_key))
             tools.register(WebFetchTool())
-            
-            # Build messages with subagent-specific prompt
-            system_prompt = self._build_subagent_prompt(task)
+
+            # Build messages — use plugin agent prompt when provided
+            system_prompt = custom_system_prompt or self._build_subagent_prompt(task)
+            model = custom_model or self.model
             messages: list[dict[str, Any]] = [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": task},
             ]
-            
+
             # Run agent loop (limited iterations)
             max_iterations = 15
             iteration = 0
             final_result: str | None = None
-            
+
             while iteration < max_iterations:
                 iteration += 1
-                
+
                 response = await self.provider.chat(
                     messages=messages,
                     tools=tools.get_definitions(),
-                    model=self.model,
+                    model=model,
                     temperature=self.temperature,
                     max_tokens=self.max_tokens,
                 )

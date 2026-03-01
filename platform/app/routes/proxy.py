@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSo
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependencies import get_current_user
+from app.config import settings
 from app.container.manager import ensure_running
 from app.db.engine import async_session, get_db
 from app.db.models import User
@@ -20,6 +21,9 @@ router = APIRouter(prefix="/api/nanobot", tags=["proxy"])
 
 async def _container_url(db: AsyncSession, user: User) -> str:
     """Get the internal URL for the user's nanobot container, starting it if needed."""
+    # Local dev mode: bypass Docker, forward to local nanobot web directly
+    if settings.dev_nanobot_url:
+        return settings.dev_nanobot_url
     container = await ensure_running(db, user.id)
     return f"http://{container.internal_host}:{container.internal_port}"
 
@@ -101,8 +105,12 @@ async def proxy_websocket(
             await websocket.close(code=4001, reason="User not found")
             return
 
-        container = await ensure_running(db, user.id)
-        target_ws_url = f"ws://{container.internal_host}:{container.internal_port}/ws/{session_id}"
+        if settings.dev_nanobot_url:
+            # Local dev mode: connect to local nanobot web directly
+            target_ws_url = settings.dev_nanobot_url.replace("http://", "ws://").replace("https://", "wss://") + f"/ws/{session_id}"
+        else:
+            container = await ensure_running(db, user.id)
+            target_ws_url = f"ws://{container.internal_host}:{container.internal_port}/ws/{session_id}"
     # DB session is now released — not held during long-lived WebSocket relay
 
     await websocket.accept()

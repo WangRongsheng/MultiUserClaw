@@ -4,26 +4,31 @@ import base64
 import mimetypes
 import platform
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from nanobot.agent.memory import MemoryStore
 from nanobot.agent.skills import SkillsLoader
+
+if TYPE_CHECKING:
+    from nanobot.agent.plugins import PluginLoader
 
 
 class ContextBuilder:
     """
     Builds the context (system prompt + messages) for the agent.
-    
-    Assembles bootstrap files, memory, skills, and conversation history
+
+    Assembles bootstrap files, memory, skills, plugins, and conversation history
     into a coherent prompt for the LLM.
     """
-    
+
     BOOTSTRAP_FILES = ["AGENTS.md", "SOUL.md", "USER.md", "TOOLS.md", "IDENTITY.md"]
-    
-    def __init__(self, workspace: Path):
+
+    def __init__(self, workspace: Path, plugin_loader: "PluginLoader | None" = None):
         self.workspace = workspace
         self.memory = MemoryStore(workspace)
-        self.skills = SkillsLoader(workspace)
+        self.plugin_loader = plugin_loader
+        extra_dirs = plugin_loader.get_skill_dirs() if plugin_loader else []
+        self.skills = SkillsLoader(workspace, extra_dirs=extra_dirs)
     
     def build_system_prompt(self, skill_names: list[str] | None = None) -> str:
         """
@@ -67,7 +72,21 @@ The following skills extend your capabilities. To use a skill, read its SKILL.md
 Skills with available="false" need dependencies installed first - you can try installing them with apt/brew.
 
 {skills_summary}""")
-        
+
+        # Plugins: agents and commands
+        if self.plugin_loader:
+            agents_summary = self.plugin_loader.build_agents_summary()
+            commands_summary = self.plugin_loader.build_commands_summary()
+            if agents_summary or commands_summary:
+                plugin_lines = ["# Plugins", "", "The following plugin agents and commands are available:"]
+                if agents_summary:
+                    plugin_lines.append("")
+                    plugin_lines.append(agents_summary)
+                if commands_summary:
+                    plugin_lines.append("")
+                    plugin_lines.append(commands_summary)
+                parts.append("\n".join(plugin_lines))
+
         return "\n\n---\n\n".join(parts)
     
     def _get_identity(self) -> str:

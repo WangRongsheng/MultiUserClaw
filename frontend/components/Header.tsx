@@ -3,33 +3,44 @@
 import React from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { MessageSquare, Activity, Clock, Puzzle, LogOut } from 'lucide-react';
+import { MessageSquare, Activity, Clock, Puzzle, Blocks, LogOut, HelpCircle, FolderOpen } from 'lucide-react';
 import { useChatStore } from '@/lib/store';
 import { logout } from '@/lib/api';
 
 const NAV_ITEMS = [
-  { name: 'Chat', href: '/', icon: MessageSquare },
-  { name: 'Status', href: '/status', icon: Activity },
-  { name: 'Cron', href: '/cron', icon: Clock },
-  { name: 'Skills', href: '/skills', icon: Puzzle },
+  { name: '对话', href: '/', icon: MessageSquare },
+  { name: '状态', href: '/status', icon: Activity },
+  { name: '定时任务', href: '/cron', icon: Clock },
+  { name: '技能', href: '/skills', icon: Puzzle },
+  { name: '插件', href: '/plugins', icon: Blocks },
+  { name: '文件', href: '/files', icon: FolderOpen },
+  { name: '帮助', href: '/help', icon: HelpCircle },
 ];
 
 function ConnectionDot() {
   const wsStatus = useChatStore((s) => s.wsStatus);
+  const nanobotReady = useChatStore((s) => s.nanobotReady);
 
-  const color =
-    wsStatus === 'connected'
-      ? 'bg-green-500'
-      : wsStatus === 'connecting'
-        ? 'bg-yellow-500'
-        : 'bg-red-500';
+  const isOnline = wsStatus === 'connected' && nanobotReady === true;
+  const isChecking = wsStatus === 'connected' && nanobotReady === null;
+  const isConnecting = wsStatus === 'connecting' || isChecking;
+  const isOffline = wsStatus === 'disconnected' || (wsStatus === 'connected' && nanobotReady === false);
 
-  const label =
-    wsStatus === 'connected'
-      ? 'Connected'
+  const color = isOnline
+    ? 'bg-green-500'
+    : isConnecting
+      ? 'bg-yellow-500'
+      : 'bg-red-500';
+
+  const label = isOnline
+    ? '已连接'
+    : isChecking
+      ? '检查中'
       : wsStatus === 'connecting'
-        ? 'Connecting'
-        : 'Offline';
+        ? '连接中'
+        : isOffline && wsStatus === 'connected'
+          ? '服务离线'
+          : '未连接';
 
   return (
     <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
@@ -50,7 +61,7 @@ function UserMenu() {
       <button
         onClick={() => logout()}
         className="flex items-center gap-1 px-2 py-1 rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground transition-colors"
-        title="Sign out"
+        title="退出登录"
       >
         <LogOut className="w-3.5 h-3.5" />
       </button>
