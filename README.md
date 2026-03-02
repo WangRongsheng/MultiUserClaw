@@ -1,4 +1,4 @@
-# MultiUserClaw - 多用户 AI Claw平台
+# MultiUserClaw - 多用户 AI Claw平台。
 
 基于nanobot改造的轻量级 AI 助手框架，支持多租户隔离部署、多平台渠道接入、工具调用、定时任务和 Web 实时通信。
 
