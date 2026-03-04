@@ -80,6 +80,9 @@ Agent browser skill使用
 https://github.com/mrlm-xyz/demo-claude-marketplace
 ![skill_marketplace.png](doc/skill_marketplace.png)
 
+指定调用skill功能
+![指定调用skill功能.png](doc/%E6%8C%87%E5%AE%9A%E8%B0%83%E7%94%A8skill%E5%8A%9F%E8%83%BD.png)
+
 ## 1. 多租户部署（Docker Compose）
 
 多租户模式下，每个用户拥有独立的 nanobot 容器，数据完全隔离。用户无需管理 API Key，只需注册登录即可使用。
