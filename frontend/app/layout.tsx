@@ -7,7 +7,7 @@ import AuthGuard from '@/components/AuthGuard';
 const inter = Inter({ subsets: ['latin'] });
 
 export const metadata: Metadata = {
-  title: 'nanobot',
+  title: 'OpenClaw',
   description: 'Personal AI Assistant',
 };
 

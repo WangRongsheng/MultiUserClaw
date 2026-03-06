@@ -19,7 +19,6 @@ import {
   listSessions,
   getSession,
   deleteSession,
-  sendMessage,
   wsManager,
   listCommands,
   getStatus,
@@ -47,7 +46,7 @@ export default function ChatPage() {
     clearMessages,
     setWsStatus,
     setIsThinking,
-    setNanobotReady,
+    setOpenclawReady,
   } = useChatStore();
 
   const [input, setInput] = useState('');
@@ -87,10 +86,13 @@ export default function ChatPage() {
     loadSessions();
   }, []);
 
-  // Connect WebSocket when sessionId changes
+  // Connect WebSocket (once) and update session key when sessionId changes
   useEffect(() => {
-    const wsSessionId = sessionId.startsWith('web:') ? sessionId.slice(4) : sessionId;
-    wsManager.connect(wsSessionId);
+    wsManager.connect();
+  }, []);
+
+  useEffect(() => {
+    wsManager.setSessionKey(sessionId);
     loadSessionMessages(sessionId);
   }, [sessionId]);
 
@@ -100,31 +102,65 @@ export default function ChatPage() {
       setWsStatus(status);
       if (status === 'connected') {
         loadSessionMessages(useChatStore.getState().sessionId);
-        // Check if the nanobot user backend is actually running
+        // Check if the openclaw user backend is actually running
         try {
           await getStatus();
-          setNanobotReady(true);
+          setOpenclawReady(true);
         } catch {
-          setNanobotReady(false);
+          setOpenclawReady(false);
         }
       } else {
-        setNanobotReady(null);
+        setOpenclawReady(null);
       }
     });
 
-    const unsubMessage = wsManager.onMessage((data) => {
-      if (data.type === 'status' && data.status === 'thinking') {
-        setIsThinking(true);
-      } else if (data.type === 'message' && data.role === 'assistant') {
+    const unsubMessage = wsManager.onEvent((data) => {
+      if (data.type !== 'event' || data.event !== 'chat' || !data.payload) return;
+
+      const payload = data.payload;
+      const state = payload.state as string;
+
+      if (state === 'delta') {
+        // First delta marks thinking start
+        if ((payload.seq as number) === 0) {
+          setIsThinking(true);
+        }
+      } else if (state === 'final') {
+        setIsThinking(false);
+        setIsLoading(false);
+        const message = payload.message as Record<string, unknown> | undefined;
+        if (message) {
+          const content = message.content;
+          let text = '';
+          if (typeof content === 'string') {
+            text = content;
+          } else if (Array.isArray(content)) {
+            text = content
+              .filter((b: Record<string, unknown>) => b.type === 'text')
+              .map((b: Record<string, unknown>) => b.text)
+              .join('');
+          }
+          if (text) {
+            addMessage({
+              role: 'assistant',
+              content: text,
+              timestamp: new Date().toISOString(),
+            });
+          }
+        } else {
+          // OpenClaw gateway doesn't include message in final event;
+          // reload session messages to get the assistant's response.
+          loadSessionMessages(useChatStore.getState().sessionId);
+        }
+        loadSessions();
+      } else if (state === 'error') {
         setIsThinking(false);
         setIsLoading(false);
         addMessage({
           role: 'assistant',
-          content: data.content || '',
+          content: `Error: ${payload.errorMessage || 'Unknown error'}`,
           timestamp: new Date().toISOString(),
-          attachments: data.attachments,
         });
-        loadSessions();
       }
     });
 
@@ -199,22 +235,14 @@ export default function ChatPage() {
     setIsThinking(false);
 
     if (wsManager.getStatus() === 'connected') {
-      const wsPayload: Record<string, unknown> = { type: 'message', content: msgContent };
-      if (attachments.length > 0) {
-        wsPayload.attachments = attachments;
-      }
-      wsManager.sendRaw(wsPayload);
+      wsManager.sendMessage(msgContent);
     } else {
-      try {
-        await sendMessage(msgContent, sessionId, attachments.length > 0 ? attachments : undefined);
-      } catch {
-        setIsLoading(false);
-        addMessage({
-          role: 'assistant',
-          content: 'Failed to send. Check if the backend is running.',
-          timestamp: new Date().toISOString(),
-        });
-      }
+      setIsLoading(false);
+      addMessage({
+        role: 'assistant',
+        content: 'WebSocket not connected. Please wait for reconnection.',
+        timestamp: new Date().toISOString(),
+      });
     }
   }, [input, isLoading, sessionId, pendingFiles]);
 
@@ -389,7 +417,7 @@ export default function ChatPage() {
             {messages.length === 0 && !isThinking && (
               <div className="flex flex-col items-center justify-center py-20 text-muted-foreground">
                 <Bot className="w-12 h-12 mb-4 opacity-50" />
-                <p className="text-lg font-medium">nanobot</p>
+                <p className="text-lg font-medium">OpenClaw</p>
                 <p className="text-sm">发送消息开始对话</p>
               </div>
             )}

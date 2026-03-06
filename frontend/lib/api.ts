@@ -1,10 +1,14 @@
-// Nanobot API client — multi-tenant edition
+// OpenClaw API client — multi-tenant edition
 //
 // In multi-tenant mode the frontend talks to the Platform Gateway.
-// Auth requests go to /api/auth/*, nanobot requests are proxied via
-// /api/nanobot/* to the user's container.
+// Auth requests go to /api/auth/*, openclaw requests are proxied via
+// /api/openclaw/* to the user's container.
 
 import type { ChatMessage, Session, SessionDetail, SystemStatus, CronJob, Skill, SlashCommand, PluginInfo, TokenResponse, AuthUser, FileAttachment, Marketplace, MarketplacePlugin } from '@/types';
+// @ts-ignore - exports map requires .js extension
+import { ed25519 } from '@noble/curves/ed25519.js';
+// @ts-ignore - exports map requires .js extension
+import { sha256 } from '@noble/hashes/sha2.js';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
 
@@ -12,8 +16,8 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
 // Token management
 // ---------------------------------------------------------------------------
 
-const TOKEN_KEY = 'nanobot_access_token';
-const REFRESH_KEY = 'nanobot_refresh_token';
+const TOKEN_KEY = 'openclaw_access_token';
+const REFRESH_KEY = 'openclaw_refresh_token';
 
 export function getAccessToken(): string | null {
   if (typeof window === 'undefined') return null;
@@ -152,7 +156,7 @@ export async function getMe(): Promise<AuthUser> {
 }
 
 // ---------------------------------------------------------------------------
-// Chat (proxied via /api/nanobot/)
+// Chat (proxied via /api/openclaw/)
 // ---------------------------------------------------------------------------
 
 export async function sendMessage(
@@ -164,7 +168,7 @@ export async function sendMessage(
   if (attachments && attachments.length > 0) {
     body.attachments = attachments;
   }
-  return fetchJSON('/api/nanobot/chat', {
+  return fetchJSON('/api/openclaw/chat', {
     method: 'POST',
     body: JSON.stringify(body),
   });
@@ -181,7 +185,7 @@ export function streamMessage(
 
   (async () => {
     try {
-      const res = await fetch(`${API_URL}/api/nanobot/chat/stream`, {
+      const res = await fetch(`${API_URL}/api/openclaw/chat/stream`, {
         method: 'POST',
         headers: authHeaders(),
         body: JSON.stringify({ message, session_id: sessionId }),
@@ -233,17 +237,15 @@ export function streamMessage(
 }
 
 // ---------------------------------------------------------------------------
-// WebSocket Manager
+// WebSocket Manager — speaks OpenClaw native protocol (Ed25519 handshake)
 // ---------------------------------------------------------------------------
 
 export type WsStatus = 'disconnected' | 'connecting' | 'connected';
 
-export type WsMessageHandler = (data: {
+export type WsEventHandler = (data: {
   type: string;
-  role?: string;
-  content?: string;
-  status?: string;
-  attachments?: FileAttachment[];
+  event?: string;
+  payload?: Record<string, unknown>;
 }) => void;
 
 export type WsStatusListener = (status: WsStatus) => void;
@@ -254,25 +256,62 @@ function getWsUrl(): string {
   return `${protocol}//${url.host}`;
 }
 
+function base64UrlEncode(bytes: Uint8Array): string {
+  let binary = '';
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+function hexEncode(bytes: Uint8Array): string {
+  return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+function normalizeDeviceMetadata(s: string): string {
+  return s.trim().toLowerCase();
+}
+
+function randomUUID(): string {
+  return globalThis.crypto.randomUUID();
+}
+
 class WebSocketManager {
   private ws: WebSocket | null = null;
-  private sessionId: string | null = null;
-  private messageHandlers: WsMessageHandler[] = [];
+  private eventHandlers: WsEventHandler[] = [];
   private statusListeners: WsStatusListener[] = [];
   private status: WsStatus = 'disconnected';
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-  private pingTimer: ReturnType<typeof setInterval> | null = null;
   private reconnectDelay = 1000;
   private maxReconnectDelay = 30000;
   private intentionalClose = false;
+  private pendingRequests = new Map<string, {
+    resolve: (value: unknown) => void;
+    reject: (err: Error) => void;
+    timer: ReturnType<typeof setTimeout>;
+  }>();
 
-  connect(sessionId: string): void {
-    if (this.sessionId === sessionId && this.ws?.readyState === globalThis.WebSocket?.OPEN) {
+  // Ed25519 device identity (ephemeral per page load)
+  private privateKey = ed25519.utils.randomSecretKey();
+  private publicKey = ed25519.getPublicKey(this.privateKey);
+  private deviceId = hexEncode(sha256(this.publicKey));
+  private publicKeyB64 = base64UrlEncode(this.publicKey);
+
+  // Current session key for chat
+  private _sessionKey: string | null = null;
+
+  get sessionKey(): string | null {
+    return this._sessionKey;
+  }
+
+  setSessionKey(key: string): void {
+    this._sessionKey = key;
+  }
+
+  connect(): void {
+    if (this.ws?.readyState === globalThis.WebSocket?.OPEN ||
+        this.ws?.readyState === globalThis.WebSocket?.CONNECTING) {
       return;
     }
-
     this.intentionalClose = false;
-    this.sessionId = sessionId;
     this.reconnectDelay = 1000;
     this._connect();
   }
@@ -284,21 +323,43 @@ class WebSocketManager {
   }
 
   sendMessage(content: string): void {
-    if (this.ws?.readyState === globalThis.WebSocket?.OPEN) {
-      this.ws.send(JSON.stringify({ type: 'message', content }));
-    }
+    if (!this._sessionKey) return;
+    const idempotencyKey = randomUUID();
+    this._send({
+      type: 'req',
+      id: randomUUID(),
+      method: 'chat.send',
+      params: {
+        sessionKey: this._sessionKey,
+        message: content,
+        idempotencyKey,
+      },
+    });
   }
 
-  sendRaw(payload: Record<string, unknown>): void {
-    if (this.ws?.readyState === globalThis.WebSocket?.OPEN) {
-      this.ws.send(JSON.stringify(payload));
+  async request<T = unknown>(method: string, params?: unknown): Promise<T> {
+    if (!this.ws || this.status !== 'connected') {
+      throw new Error('Not connected');
     }
+    const id = randomUUID();
+    return new Promise<T>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingRequests.delete(id);
+        reject(new Error(`Request timeout: ${method}`));
+      }, 60_000);
+      this.pendingRequests.set(id, {
+        resolve: resolve as (v: unknown) => void,
+        reject,
+        timer,
+      });
+      this._send({ type: 'req', id, method, params: params || {} });
+    });
   }
 
-  onMessage(handler: WsMessageHandler): () => void {
-    this.messageHandlers.push(handler);
+  onEvent(handler: WsEventHandler): () => void {
+    this.eventHandlers.push(handler);
     return () => {
-      this.messageHandlers = this.messageHandlers.filter((h) => h !== handler);
+      this.eventHandlers = this.eventHandlers.filter((h) => h !== handler);
     };
   }
 
@@ -314,40 +375,75 @@ class WebSocketManager {
     return this.status;
   }
 
+  private _send(obj: Record<string, unknown>): void {
+    if (this.ws?.readyState === globalThis.WebSocket?.OPEN) {
+      this.ws.send(JSON.stringify(obj));
+    }
+  }
+
   private _connect(): void {
     this._cleanup();
-
-    if (!this.sessionId) return;
-
     this._setStatus('connecting');
 
-    // In multi-tenant mode, connect through the gateway with auth token
     const wsUrl = getWsUrl();
     const token = getAccessToken() || '';
     const ws = new globalThis.WebSocket(
-      `${wsUrl}/api/nanobot/ws/${this.sessionId}?token=${encodeURIComponent(token)}`
+      `${wsUrl}/api/openclaw/ws?token=${encodeURIComponent(token)}`
     );
 
     ws.onopen = () => {
-      this.reconnectDelay = 1000;
-      this._setStatus('connected');
-      this._startPing();
+      // Wait for connect.challenge event from gateway
     };
 
     ws.onmessage = (event) => {
+      let frame: Record<string, unknown>;
       try {
-        const data = JSON.parse(event.data);
-        if (data.type === 'pong') return;
-        for (const handler of this.messageHandlers) {
-          handler(data);
-        }
+        frame = JSON.parse(event.data);
       } catch {
-        // ignore parse errors
+        return;
+      }
+
+      if (frame.type === 'event') {
+        const evt = frame as { type: string; event: string; payload: Record<string, unknown> };
+
+        if (evt.event === 'connect.challenge') {
+          this._handleChallenge(evt.payload);
+          return;
+        }
+
+        if (evt.event === 'connect.ok' || evt.event === 'hello') {
+          this.reconnectDelay = 1000;
+          this._setStatus('connected');
+          return;
+        }
+
+        // Forward other events to handlers
+        for (const handler of this.eventHandlers) {
+          handler(evt);
+        }
+      } else if (frame.type === 'res') {
+        // Check if this is the connect response (before we're marked connected)
+        if (this.status !== 'connected' && (frame as { ok?: boolean }).ok) {
+          this.reconnectDelay = 1000;
+          this._setStatus('connected');
+        }
+
+        const id = frame.id as string;
+        const pending = this.pendingRequests.get(id);
+        if (pending) {
+          clearTimeout(pending.timer);
+          this.pendingRequests.delete(id);
+          if ((frame as { ok?: boolean }).ok) {
+            pending.resolve((frame as { payload?: unknown }).payload);
+          } else {
+            const err = (frame as { error?: { message?: string } }).error;
+            pending.reject(new Error(err?.message || 'Request failed'));
+          }
+        }
       }
     };
 
     ws.onclose = () => {
-      this._stopPing();
       if (!this.intentionalClose) {
         this._setStatus('disconnected');
         this._scheduleReconnect();
@@ -361,12 +457,72 @@ class WebSocketManager {
     this.ws = ws;
   }
 
+  private _handleChallenge(payload: Record<string, unknown>): void {
+    const nonce = String(payload.nonce || '').trim();
+    const signedAtMs = Date.now();
+    const clientId = 'webchat-ui';
+    const clientMode = 'webchat';
+    const role = 'operator';
+    const scopes = ['operator.admin'];
+    const platform = 'browser';
+
+    // Build v3 auth payload
+    const authPayload = [
+      'v3',
+      this.deviceId,
+      clientId,
+      clientMode,
+      role,
+      scopes.join(','),
+      String(signedAtMs),
+      '', // token (empty)
+      nonce,
+      normalizeDeviceMetadata(platform),
+      normalizeDeviceMetadata(platform),
+    ].join('|');
+
+    const msgBytes = new TextEncoder().encode(authPayload);
+    const signature = base64UrlEncode(ed25519.sign(msgBytes, this.privateKey));
+
+    this._send({
+      type: 'req',
+      id: randomUUID(),
+      method: 'connect',
+      params: {
+        minProtocol: 3,
+        maxProtocol: 3,
+        client: {
+          id: clientId,
+          displayName: 'OpenClaw WebChat',
+          version: '1.0.0',
+          platform,
+          mode: clientMode,
+          deviceFamily: platform,
+        },
+        role,
+        scopes,
+        device: {
+          id: this.deviceId,
+          publicKey: this.publicKeyB64,
+          signature,
+          signedAt: signedAtMs,
+          nonce,
+        },
+      },
+    });
+  }
+
   private _cleanup(): void {
-    this._stopPing();
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
+    // Reject pending requests
+    this.pendingRequests.forEach((p) => {
+      clearTimeout(p.timer);
+      p.reject(new Error('Connection closed'));
+    });
+    this.pendingRequests.clear();
     if (this.ws) {
       this.ws.onopen = null;
       this.ws.onmessage = null;
@@ -389,22 +545,6 @@ class WebSocketManager {
     this.reconnectDelay = Math.min(this.reconnectDelay * 2, this.maxReconnectDelay);
   }
 
-  private _startPing(): void {
-    this._stopPing();
-    this.pingTimer = setInterval(() => {
-      if (this.ws?.readyState === globalThis.WebSocket?.OPEN) {
-        this.ws.send(JSON.stringify({ type: 'ping' }));
-      }
-    }, 30000);
-  }
-
-  private _stopPing(): void {
-    if (this.pingTimer) {
-      clearInterval(this.pingTimer);
-      this.pingTimer = null;
-    }
-  }
-
   private _setStatus(status: WsStatus): void {
     if (this.status === status) return;
     this.status = status;
@@ -421,15 +561,15 @@ export const wsManager = new WebSocketManager();
 // ---------------------------------------------------------------------------
 
 export async function listSessions(): Promise<Session[]> {
-  return fetchJSON('/api/nanobot/sessions');
+  return fetchJSON('/api/openclaw/sessions');
 }
 
 export async function getSession(key: string): Promise<SessionDetail> {
-  return fetchJSON(`/api/nanobot/sessions/${encodeURIComponent(key)}`);
+  return fetchJSON(`/api/openclaw/sessions/${encodeURIComponent(key)}`);
 }
 
 export async function deleteSession(key: string): Promise<void> {
-  await fetchJSON(`/api/nanobot/sessions/${encodeURIComponent(key)}`, { method: 'DELETE' });
+  await fetchJSON(`/api/openclaw/sessions/${encodeURIComponent(key)}`, { method: 'DELETE' });
 }
 
 // ---------------------------------------------------------------------------
@@ -437,7 +577,7 @@ export async function deleteSession(key: string): Promise<void> {
 // ---------------------------------------------------------------------------
 
 export async function getStatus(): Promise<SystemStatus> {
-  return fetchJSON('/api/nanobot/status');
+  return fetchJSON('/api/openclaw/status');
 }
 
 // ---------------------------------------------------------------------------
@@ -445,7 +585,7 @@ export async function getStatus(): Promise<SystemStatus> {
 // ---------------------------------------------------------------------------
 
 export async function listCronJobs(includeDisabled: boolean = true): Promise<CronJob[]> {
-  return fetchJSON(`/api/nanobot/cron/jobs?include_disabled=${includeDisabled}`);
+  return fetchJSON(`/api/openclaw/cron/jobs?include_disabled=${includeDisabled}`);
 }
 
 export async function addCronJob(params: {
@@ -455,25 +595,25 @@ export async function addCronJob(params: {
   cron_expr?: string;
   at_iso?: string;
 }): Promise<CronJob> {
-  return fetchJSON('/api/nanobot/cron/jobs', {
+  return fetchJSON('/api/openclaw/cron/jobs', {
     method: 'POST',
     body: JSON.stringify(params),
   });
 }
 
 export async function removeCronJob(jobId: string): Promise<void> {
-  await fetchJSON(`/api/nanobot/cron/jobs/${jobId}`, { method: 'DELETE' });
+  await fetchJSON(`/api/openclaw/cron/jobs/${jobId}`, { method: 'DELETE' });
 }
 
 export async function toggleCronJob(jobId: string, enabled: boolean): Promise<CronJob> {
-  return fetchJSON(`/api/nanobot/cron/jobs/${jobId}/toggle`, {
+  return fetchJSON(`/api/openclaw/cron/jobs/${jobId}/toggle`, {
     method: 'PUT',
     body: JSON.stringify({ enabled }),
   });
 }
 
 export async function runCronJob(jobId: string): Promise<void> {
-  await fetchJSON(`/api/nanobot/cron/jobs/${jobId}/run`, { method: 'POST' });
+  await fetchJSON(`/api/openclaw/cron/jobs/${jobId}/run`, { method: 'POST' });
 }
 
 export async function ping(): Promise<{ message: string }> {
@@ -485,19 +625,19 @@ export async function ping(): Promise<{ message: string }> {
 // ---------------------------------------------------------------------------
 
 export async function listSkills(): Promise<Skill[]> {
-  return fetchJSON('/api/nanobot/skills');
+  return fetchJSON('/api/openclaw/skills');
 }
 
 export async function listCommands(): Promise<SlashCommand[]> {
-  return fetchJSON('/api/nanobot/commands');
+  return fetchJSON('/api/openclaw/commands');
 }
 
 export async function listPlugins(): Promise<PluginInfo[]> {
-  return fetchJSON('/api/nanobot/plugins');
+  return fetchJSON('/api/openclaw/plugins');
 }
 
 export async function downloadSkill(name: string): Promise<void> {
-  const url = `${API_URL}/api/nanobot/skills/${encodeURIComponent(name)}/download`;
+  const url = `${API_URL}/api/openclaw/skills/${encodeURIComponent(name)}/download`;
   const token = getAccessToken();
   const headers: Record<string, string> = {};
   if (token) headers['Authorization'] = `Bearer ${token}`;
@@ -519,7 +659,7 @@ export async function downloadSkill(name: string): Promise<void> {
 }
 
 export async function deleteSkill(name: string): Promise<void> {
-  await fetchJSON(`/api/nanobot/skills/${encodeURIComponent(name)}`, { method: 'DELETE' });
+  await fetchJSON(`/api/openclaw/skills/${encodeURIComponent(name)}`, { method: 'DELETE' });
 }
 
 export async function uploadSkill(file: File): Promise<Skill> {
@@ -532,7 +672,7 @@ export async function uploadSkill(file: File): Promise<Skill> {
     headers['Authorization'] = `Bearer ${token}`;
   }
 
-  const res = await fetch(`${API_URL}/api/nanobot/skills/upload`, {
+  const res = await fetch(`${API_URL}/api/openclaw/skills/upload`, {
     method: 'POST',
     headers,
     body: formData,
@@ -544,7 +684,7 @@ export async function uploadSkill(file: File): Promise<Skill> {
       const retryHeaders: Record<string, string> = {};
       const newToken = getAccessToken();
       if (newToken) retryHeaders['Authorization'] = `Bearer ${newToken}`;
-      const retry = await fetch(`${API_URL}/api/nanobot/skills/upload`, {
+      const retry = await fetch(`${API_URL}/api/openclaw/skills/upload`, {
         method: 'POST',
         headers: retryHeaders,
         body: formData,
@@ -572,41 +712,41 @@ export async function uploadSkill(file: File): Promise<Skill> {
 // ---------------------------------------------------------------------------
 
 export async function listMarketplaces(): Promise<Marketplace[]> {
-  return fetchJSON('/api/nanobot/marketplaces');
+  return fetchJSON('/api/openclaw/marketplaces');
 }
 
 export async function addMarketplace(source: string): Promise<Marketplace> {
-  return fetchJSON('/api/nanobot/marketplaces', {
+  return fetchJSON('/api/openclaw/marketplaces', {
     method: 'POST',
     body: JSON.stringify({ source }),
   });
 }
 
 export async function removeMarketplace(name: string): Promise<void> {
-  await fetchJSON(`/api/nanobot/marketplaces/${encodeURIComponent(name)}`, {
+  await fetchJSON(`/api/openclaw/marketplaces/${encodeURIComponent(name)}`, {
     method: 'DELETE',
   });
 }
 
 export async function updateMarketplace(name: string): Promise<Marketplace> {
-  return fetchJSON(`/api/nanobot/marketplaces/${encodeURIComponent(name)}/update`, {
+  return fetchJSON(`/api/openclaw/marketplaces/${encodeURIComponent(name)}/update`, {
     method: 'POST',
   });
 }
 
 export async function listMarketplacePlugins(name: string): Promise<MarketplacePlugin[]> {
-  return fetchJSON(`/api/nanobot/marketplaces/${encodeURIComponent(name)}/plugins`);
+  return fetchJSON(`/api/openclaw/marketplaces/${encodeURIComponent(name)}/plugins`);
 }
 
 export async function installMarketplacePlugin(marketplaceName: string, pluginName: string): Promise<void> {
   await fetchJSON(
-    `/api/nanobot/marketplaces/${encodeURIComponent(marketplaceName)}/plugins/${encodeURIComponent(pluginName)}/install`,
+    `/api/openclaw/marketplaces/${encodeURIComponent(marketplaceName)}/plugins/${encodeURIComponent(pluginName)}/install`,
     { method: 'POST' }
   );
 }
 
 export async function uninstallPlugin(pluginName: string): Promise<void> {
-  await fetchJSON(`/api/nanobot/plugins/${encodeURIComponent(pluginName)}`, {
+  await fetchJSON(`/api/openclaw/plugins/${encodeURIComponent(pluginName)}`, {
     method: 'DELETE',
   });
 }
@@ -634,7 +774,7 @@ export async function uploadFile(
 
   const result = await new Promise<FileAttachment>((resolve, reject) => {
     const xhr = new XMLHttpRequest();
-    xhr.open('POST', `${API_URL}/api/nanobot/files/upload`);
+    xhr.open('POST', `${API_URL}/api/openclaw/files/upload`);
     if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
 
     xhr.upload.onprogress = (e) => {
@@ -661,15 +801,15 @@ export async function uploadFile(
 
 export async function listFiles(sessionId?: string): Promise<FileAttachment[]> {
   const params = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : '';
-  return fetchJSON(`/api/nanobot/files${params}`);
+  return fetchJSON(`/api/openclaw/files${params}`);
 }
 
 export async function deleteFile(fileId: string): Promise<void> {
-  await fetchJSON(`/api/nanobot/files/${encodeURIComponent(fileId)}`, { method: 'DELETE' });
+  await fetchJSON(`/api/openclaw/files/${encodeURIComponent(fileId)}`, { method: 'DELETE' });
 }
 
 export function getFileUrl(fileId: string): string {
-  return `${API_URL}/api/nanobot/files/${encodeURIComponent(fileId)}`;
+  return `${API_URL}/api/openclaw/files/${encodeURIComponent(fileId)}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -692,11 +832,11 @@ export interface BrowseResult {
 
 export async function browseWorkspace(path: string = ''): Promise<BrowseResult> {
   const params = path ? `?path=${encodeURIComponent(path)}` : '';
-  return fetchJSON(`/api/nanobot/workspace/browse${params}`);
+  return fetchJSON(`/api/openclaw/workspace/browse${params}`);
 }
 
 export function getWorkspaceDownloadUrl(path: string): string {
-  return `${API_URL}/api/nanobot/workspace/download?path=${encodeURIComponent(path)}`;
+  return `${API_URL}/api/openclaw/workspace/download?path=${encodeURIComponent(path)}`;
 }
 
 export async function uploadToWorkspace(
@@ -716,7 +856,7 @@ export async function uploadToWorkspace(
 
   return new Promise<WorkspaceItem>((resolve, reject) => {
     const xhr = new XMLHttpRequest();
-    xhr.open('POST', `${API_URL}/api/nanobot/workspace/upload`);
+    xhr.open('POST', `${API_URL}/api/openclaw/workspace/upload`);
     if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
 
     xhr.upload.onprogress = (e) => {
@@ -739,13 +879,13 @@ export async function uploadToWorkspace(
 }
 
 export async function deleteWorkspacePath(path: string): Promise<void> {
-  await fetchJSON(`/api/nanobot/workspace/delete?path=${encodeURIComponent(path)}`, {
+  await fetchJSON(`/api/openclaw/workspace/delete?path=${encodeURIComponent(path)}`, {
     method: 'DELETE',
   });
 }
 
 export async function createWorkspaceDir(path: string): Promise<WorkspaceItem> {
-  return fetchJSON(`/api/nanobot/workspace/mkdir?path=${encodeURIComponent(path)}`, {
+  return fetchJSON(`/api/openclaw/workspace/mkdir?path=${encodeURIComponent(path)}`, {
     method: 'POST',
   });
 }

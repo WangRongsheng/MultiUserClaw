@@ -52,7 +52,7 @@ export default function RegisterPage() {
       <div className="w-full max-w-sm space-y-6">
         <div className="text-center">
           <span className="text-4xl">🐈</span>
-          <h1 className="mt-2 text-2xl font-bold">注册 Nanobot</h1>
+          <h1 className="mt-2 text-2xl font-bold">注册 OpenClaw</h1>
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-4">

@@ -62,7 +62,7 @@ export default function HelpPage() {
     <div className="max-w-2xl mx-auto px-4 py-8 space-y-4">
       <div className="mb-6">
         <h1 className="text-2xl font-bold mb-1">使用帮助</h1>
-        <p className="text-muted-foreground text-sm">了解如何使用 nanobot 的各项功能</p>
+        <p className="text-muted-foreground text-sm">了解如何使用 OpenClaw 的各项功能</p>
       </div>
 
       <Section icon={<MessageSquare className="w-5 h-5" />} title="如何开始对话" defaultOpen>
@@ -70,7 +70,7 @@ export default function HelpPage() {
         <ol className="list-decimal list-inside space-y-1.5 ml-1">
           <li>在底部输入框中输入你的问题或指令</li>
           <li>按 <Tag>Enter</Tag> 发送，按 <Tag>Shift + Enter</Tag> 换行</li>
-          <li>等待 nanobot 回复（右上角会显示"思考中..."）</li>
+          <li>等待 OpenClaw 回复（右上角会显示"思考中..."）</li>
         </ol>
         <p className="mt-1">
           点击左上角的 <Tag>新对话</Tag> 按钮可以开启一个全新的对话，历史对话会保存在左侧列表中。
@@ -112,7 +112,7 @@ export default function HelpPage() {
           <div className="flex items-center gap-2">
             <span className="w-2 h-2 rounded-full bg-green-500 flex-shrink-0" />
             <Tag color="green">已连接</Tag>
-            <span>— nanobot 服务正常运行，可以正常对话</span>
+            <span>— OpenClaw 服务正常运行，可以正常对话</span>
           </div>
           <div className="flex items-center gap-2">
             <span className="w-2 h-2 rounded-full bg-yellow-500 flex-shrink-0" />
@@ -122,7 +122,7 @@ export default function HelpPage() {
           <div className="flex items-center gap-2">
             <span className="w-2 h-2 rounded-full bg-red-500 flex-shrink-0" />
             <Tag color="red">服务离线</Tag>
-            <span>— 已连接到网关，但 nanobot 用户服务未启动</span>
+            <span>— 已连接到网关，但 OpenClaw 用户服务未启动</span>
           </div>
           <div className="flex items-center gap-2">
             <span className="w-2 h-2 rounded-full bg-red-500 flex-shrink-0" />
@@ -131,7 +131,7 @@ export default function HelpPage() {
           </div>
         </div>
         <p className="mt-3 text-xs">
-          <strong className="text-foreground">提示：</strong>若长时间显示"服务离线"，请联系管理员确认你的 nanobot 实例是否已启动。
+          <strong className="text-foreground">提示：</strong>若长时间显示"服务离线"，请联系管理员确认你的 OpenClaw 实例是否已启动。
         </p>
       </Section>
 
@@ -151,7 +151,7 @@ export default function HelpPage() {
             <p>请检查右上角连接状态是否为"已连接"。若显示"服务离线"或"未连接"，说明后端服务未运行，消息无法被处理。</p>
           </div>
           <div>
-            <p className="font-medium text-foreground mb-1">Q：如何查看 nanobot 的运行状态？</p>
+            <p className="font-medium text-foreground mb-1">Q：如何查看 OpenClaw 的运行状态？</p>
             <p>点击顶部导航栏的<strong className="text-foreground">状态</strong>页面，可以查看服务配置、AI 模型、各通道和定时任务的运行状况。</p>
           </div>
           <div>
@@ -160,7 +160,7 @@ export default function HelpPage() {
           </div>
           <div>
             <p className="font-medium text-foreground mb-1">Q：什么是技能和插件？</p>
-            <p><strong className="text-foreground">技能</strong>是可上传的自定义提示词包，扩展 nanobot 的能力范围。<strong className="text-foreground">插件</strong>是更完整的功能扩展，可以提供新的斜杠命令、专用 Agent 等。</p>
+            <p><strong className="text-foreground">技能</strong>是可上传的自定义提示词包，扩展 OpenClaw 的能力范围。<strong className="text-foreground">插件</strong>是更完整的功能扩展，可以提供新的斜杠命令、专用 Agent 等。</p>
           </div>
         </div>
       </Section>

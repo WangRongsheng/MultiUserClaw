@@ -57,10 +57,10 @@ export default function StatusPage() {
             <div className="flex items-center gap-3 text-destructive">
               <AlertCircle className="w-5 h-5" />
               <div>
-                <p className="font-medium">Cannot connect to nanobot backend</p>
+                <p className="font-medium">Cannot connect to OpenClaw backend</p>
                 <p className="text-sm text-muted-foreground mt-1">{error}</p>
                 <p className="text-sm text-muted-foreground mt-1">
-                  Make sure the backend is running: <code className="bg-muted px-1 rounded">nanobot web</code>
+                  Make sure the backend is running: <code className="bg-muted px-1 rounded">openclaw web</code>
                 </p>
               </div>
             </div>

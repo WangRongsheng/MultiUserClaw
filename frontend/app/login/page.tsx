@@ -40,7 +40,7 @@ export default function LoginPage() {
       <div className="w-full max-w-sm space-y-6">
         <div className="text-center">
           <span className="text-4xl">🐈</span>
-          <h1 className="mt-2 text-2xl font-bold">登录 Nanobot</h1>
+          <h1 className="mt-2 text-2xl font-bold">登录 OpenClaw</h1>
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-4">

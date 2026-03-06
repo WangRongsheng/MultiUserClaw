@@ -52,7 +52,7 @@ export default function CronPage() {
     setError(null);
     try {
       const data = await listCronJobs(true);
-      setJobs(data);
+      setJobs(Array.isArray(data) ? data : []);
     } catch (err: any) {
       setError(err.message || 'Failed to load jobs');
     } finally {

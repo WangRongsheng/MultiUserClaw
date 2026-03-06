@@ -61,7 +61,7 @@ export default function PluginsPage() {
           </h1>
           <p className="text-sm text-muted-foreground mt-1">
             Installed from{' '}
-            <code className="text-xs bg-muted px-1 py-0.5 rounded">~/.nanobot/plugins/</code>
+            <code className="text-xs bg-muted px-1 py-0.5 rounded">~/.openclaw/skills/</code>
             {' '}or{' '}
             <code className="text-xs bg-muted px-1 py-0.5 rounded">&lt;workspace&gt;/plugins/</code>
           </p>
@@ -92,8 +92,8 @@ export default function PluginsPage() {
             <p className="font-medium">No plugins installed</p>
             <p className="text-sm mt-2 max-w-sm mx-auto">
               Place a plugin directory in{' '}
-              <code className="text-xs bg-muted px-1 py-0.5 rounded">~/.nanobot/plugins/</code>{' '}
-              and restart nanobot.
+              <code className="text-xs bg-muted px-1 py-0.5 rounded">~/.openclaw/skills/</code>{' '}
+              and restart OpenClaw.
             </p>
           </CardContent>
         </Card>

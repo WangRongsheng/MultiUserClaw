@@ -20,12 +20,12 @@ const NAV_ITEMS = [
 
 function ConnectionDot() {
   const wsStatus = useChatStore((s) => s.wsStatus);
-  const nanobotReady = useChatStore((s) => s.nanobotReady);
+  const openclawReady = useChatStore((s) => s.openclawReady);
 
-  const isOnline = wsStatus === 'connected' && nanobotReady === true;
-  const isChecking = wsStatus === 'connected' && nanobotReady === null;
+  const isOnline = wsStatus === 'connected' && openclawReady === true;
+  const isChecking = wsStatus === 'connected' && openclawReady === null;
   const isConnecting = wsStatus === 'connecting' || isChecking;
-  const isOffline = wsStatus === 'disconnected' || (wsStatus === 'connected' && nanobotReady === false);
+  const isOffline = wsStatus === 'disconnected' || (wsStatus === 'connected' && openclawReady === false);
 
   const color = isOnline
     ? 'bg-green-500'
@@ -83,7 +83,7 @@ const Header = () => {
         <div className="flex justify-between items-center h-14">
           <Link href="/" className="flex items-center space-x-2">
             <span className="text-xl">🐈</span>
-            <span className="text-lg font-bold">nanobot</span>
+            <span className="text-lg font-bold">OpenClaw</span>
           </Link>
 
           {!isAuthPage && user && (
