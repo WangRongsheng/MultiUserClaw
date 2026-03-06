@@ -1,4 +1,4 @@
-// Nanobot frontend types
+// OpenClaw frontend types
 
 export interface AuthUser {
   id: string;
