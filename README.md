@@ -13,7 +13,7 @@ http://117.133.60.219:3080/login
 
 🔔：openclaw_oldfrontend分支是基于openclaw版本的旧版本前端, 🦞 OpenClaw 2026.3.3 (eae1484)
 
-🔔：当前的main分支是的Openclaw的版本：🦞 OpenClaw 2026.3.3 (eae1484)
+🔔：当前的main分支是的Openclaw的版本：🦞 OpenClaw 2026.3.13 (8a5e642)
 
 ---
 
